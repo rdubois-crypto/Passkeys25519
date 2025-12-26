@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Passkey Feature Test</title>
+  <style>
+    body { font-family: system-ui; max-width: 800px; margin: 40px auto; padding: 20px; background: #fafafa; }
+    h1 { color: #333; }
+    h2 { color: #555; margin-top: 30px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+    button { padding: 12px 24px; font-size: 14px; cursor: pointer; margin: 5px; border: none; border-radius: 6px; }
+    .btn-primary { background: #4285f4; color: white; }
+    .btn-primary:hover { background: #3367d6; }
+    .btn-secondary { background: #666; color: white; }
+    .btn-secondary:hover { background: #555; }
+    pre { background: #f4f4f4; padding: 15px; overflow-x: auto; font-size: 12px; border-radius: 6px; }
+    .result { margin-top: 15px; padding: 15px; border-radius: 8px; }
+    .success { background: #d4edda; color: #155724; }
+    .failure { background: #f8d7da; color: #721c24; }
+    .info { background: #e7f1ff; color: #004085; }
+    .warning { background: #fff3cd; color: #856404; }
+    table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+    td, th { border: 1px solid #ddd; padding: 10px; text-align: left; }
+    th { background: #f4f4f4; }
+    code { background: #eee; padding: 2px 6px; border-radius: 3px; }
+    .section { background: white; padding: 20px; border-radius: 10px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .status-icon { font-size: 24px; margin-right: 10px; }
+  </style>
+</head>
+<body>
+  <h1>🔐 Passkey Feature Test</h1>
+  <p>Test advanced passkey features on your device: <strong>PRF extension</strong> (deterministic key derivation) and <strong>Ed25519</strong> signatures.</p>
+
+  <!-- ==================== PRF EXTENSION TEST ==================== -->
+  <div class="section">
+    <h2>1. PRF Extension Test (Deterministic Output)</h2>
+    <p>Tests if your authenticator supports the <code>prf</code> extension for deterministic key derivation. This is useful for end-to-end encryption.</p>
+    
+    <button class="btn-primary" onclick="createPRFCredential()">Create Passkey with PRF</button>
+    <button class="btn-secondary" onclick="testPRF()" id="btnTestPRF" disabled>Test PRF (run multiple times)</button>
+    <button class="btn-secondary" onclick="clearPRF()">Clear Results</button>
+    
+    <div id="prfCredentialInfo"></div>
+    
+    <h3>PRF Outputs</h3>
+    <div id="prfOutputs"><p>No PRF outputs yet. Create a credential first.</p></div>
+    
+    <h3>Analysis</h3>
+    <div id="prfAnalysis"></div>
+  </div>
+
+  <!-- ==================== ED25519 TEST ==================== -->
+  <div class="section">
+    <h2>2. Ed25519 (EdDSA) Signature Test</h2>
+    <p>Tests if your authenticator supports <strong>Ed25519</strong> signatures (COSE algorithm -8) instead of the default P-256/ES256.</p>
+    
+    <div class="result warning">
+      <strong>⚠️ Note:</strong> Ed25519 support is rare. Most platform authenticators (Windows Hello, Touch ID, Face ID) only support ES256 (P-256). Hardware security keys like YubiKey 5 may support it.
+    </div>
+    
+    <button class="btn-primary" onclick="testEd25519()">Test Ed25519 Support</button>
+    <div id="ed25519Result"></div>
+  </div>
+
+  <!-- ==================== DEVICE INFO ==================== -->
+  <div class="section">
+    <h2>3. Device Information</h2>
+    <div id="deviceInfo"></div>
+  </div>
+
+  <script>
+    // ==================== GLOBAL STATE ====================
+    let prfCredential = null;
+    let prfResults = [];
+    const prfSalt = new TextEncoder().encode("passkey-prf-test-salt-v1");
+
+    // ==================== INIT ====================
+    document.addEventListener('DOMContentLoaded', () => {
+      showDeviceInfo();
+    });
+
+    function showDeviceInfo() {
+      const ua = navigator.userAgent;
+      let platform = 'Unknown';
+      let browser = 'Unknown';
+      
+      if (ua.includes('Windows')) platform = 'Windows';
+      else if (ua.includes('Mac')) platform = 'macOS';
+      else if (ua.includes('Linux')) platform = 'Linux';
+      else if (ua.includes('Android')) platform = 'Android';
+      else if (ua.includes('iPhone') || ua.includes('iPad')) platform = 'iOS/iPadOS';
+      
+      if (ua.includes('Chrome') && !ua.includes('Edg')) browser = 'Chrome';
+      else if (ua.includes('Edg')) browser = 'Edge';
+      else if (ua.includes('Firefox')) browser = 'Firefox';
+      else if (ua.includes('Safari') && !ua.includes('Chrome')) browser = 'Safari';
+      
+      const webauthnSupported = !!window.PublicKeyCredential;
+      
+      document.getElementById('deviceInfo').innerHTML = `
+        <table>
+          <tr><th>Property</th><th>Value</th></tr>
+          <tr><td>Platform</td><td>${platform}</td></tr>
+          <tr><td>Browser</td><td>${browser}</td></tr>
+          <tr><td>WebAuthn Supported</td><td>${webauthnSupported ? '✅ Yes' : '❌ No'}</td></tr>
+          <tr><td>User Agent</td><td><small>${ua}</small></td></tr>
+        </table>
+      `;
+    }
+
+    // ==================== PRF EXTENSION TEST ====================
+    async function createPRFCredential() {
+      if (!window.PublicKeyCredential) {
+        document.getElementById('prfCredentialInfo').innerHTML = 
+          '<div class="result failure">WebAuthn not supported in this browser.</div>';
+        return;
+      }
+
+      const userId = crypto.getRandomValues(new Uint8Array(16));
+      
+      try {
+        document.getElementById('prfCredentialInfo').innerHTML = 
+          '<div class="result info">Creating credential... Please complete the passkey prompt.</div>';
+        
+        prfCredential = await navigator.credentials.create({
+          publicKey: {
+            challenge: crypto.getRandomValues(new Uint8Array(32)),
+            rp: { name: "PRF Test", id: location.hostname },
+            user: { id: userId, name: "test@example.com", displayName: "Test User" },
+            pubKeyCredParams: [
+              { type: "public-key", alg: -7 },   // ES256
+              { type: "public-key", alg: -257 }  // RS256
+            ],
+            authenticatorSelection: {
+              residentKey: "preferred",
+              userVerification: "preferred"
+            },
+            extensions: {
+              prf: {}  // Request PRF capability
+            },
+            timeout: 120000
+          }
+        });
+        
+        const extResults = prfCredential.getClientExtensionResults();
+        const prfEnabled = extResults.prf?.enabled;
+        
+        document.getElementById('prfCredentialInfo').innerHTML = `
+          <div class="result ${prfEnabled ? 'success' : 'warning'}">
+            <span class="status-icon">${prfEnabled ? '✅' : '⚠️'}</span>
+            <strong>Credential Created</strong><br><br>
+            <table>
+              <tr><td>Credential ID</td><td><code>${toHex(prfCredential.rawId).slice(0, 48)}...</code></td></tr>
+              <tr><td>PRF Supported</td><td><strong>${prfEnabled ? '✅ YES' : '❌ NO'}</strong></td></tr>
+            </table>
+            ${!prfEnabled ? '<p>This authenticator does not support PRF. Try a YubiKey 5 or Android with Google Password Manager.</p>' : '<p>PRF is supported! Click "Test PRF" to verify deterministic output.</p>'}
+          </div>
+        `;
+        
+        document.getElementById('btnTestPRF').disabled = !prfEnabled;
+        prfResults = [];
+        updatePRFOutputs();
+        
+      } catch (e) {
+        document.getElementById('prfCredentialInfo').innerHTML = `
+          <div class="result failure">
+            <strong>❌ Error creating credential</strong><br><br>
+            ${e.name}: ${e.message}
+          </div>`;
+      }
+    }
+    
+    async function testPRF() {
+      if (!prfCredential) {
+        alert('Create a credential first');
+        return;
+      }
+      
+      try {
+        const assertion = await navigator.credentials.get({
+          publicKey: {
+            challenge: crypto.getRandomValues(new Uint8Array(32)),
+            rpId: location.hostname,
+            allowCredentials: [{ type: "public-key", id: prfCredential.rawId }],
+            extensions: {
+              prf: {
+                eval: { first: prfSalt }
+              }
+            },
+            userVerification: "preferred",
+            timeout: 120000
+          }
+        });
+        
+        const extResults = assertion.getClientExtensionResults();
+        
+        if (extResults.prf?.results?.first) {
+          const output = toHex(extResults.prf.results.first);
+          prfResults.push({
+            index: prfResults.length + 1,
+            output,
+            timestamp: new Date().toLocaleTimeString()
+          });
+          updatePRFOutputs();
+        } else {
+          document.getElementById('prfOutputs').innerHTML += `
+            <div class="result failure">PRF result not returned. The authenticator may not support PRF during assertion.</div>`;
+        }
+        
+      } catch (e) {
+        document.getElementById('prfOutputs').innerHTML += `
+          <div class="result failure">Error: ${e.name} - ${e.message}</div>`;
+      }
+    }
+    
+    function updatePRFOutputs() {
+      if (prfResults.length === 0) {
+        document.getElementById('prfOutputs').innerHTML = '<p>No PRF outputs yet.</p>';
+        document.getElementById('prfAnalysis').innerHTML = '';
+        return;
+      }
+      
+      let html = `<table>
+        <tr><th>#</th><th>Time</th><th>PRF Output (32 bytes)</th></tr>`;
+      
+      for (const r of prfResults) {
+        html += `<tr>
+          <td>${r.index}</td>
+          <td>${r.timestamp}</td>
+          <td><code style="word-break: break-all;">${r.output}</code></td>
+        </tr>`;
+      }
+      html += '</table>';
+      
+      document.getElementById('prfOutputs').innerHTML = html;
+      
+      // Analysis
+      if (prfResults.length >= 2) {
+        const allSame = prfResults.every(r => r.output === prfResults[0].output);
+        
+        document.getElementById('prfAnalysis').innerHTML = allSame 
+          ? `<div class="result success">
+              <span class="status-icon">✅</span>
+              <strong>DETERMINISTIC!</strong><br>
+              All ${prfResults.length} outputs are identical. Same salt → same 32-byte output every time.<br>
+              This PRF output can be used for encryption key derivation.
+            </div>`
+          : `<div class="result failure">
+              <span class="status-icon">❌</span>
+              <strong>NOT DETERMINISTIC</strong><br>
+              Outputs differ — this should not happen with a correctly implemented PRF.
+            </div>`;
+      } else {
+        document.getElementById('prfAnalysis').innerHTML = 
+          '<div class="result info">Run PRF test at least 2 times to verify determinism.</div>';
+      }
+    }
+    
+    function clearPRF() {
+      prfResults = [];
+      updatePRFOutputs();
+    }
+
+    // ==================== ED25519 TEST ====================
+    async function testEd25519() {
+      const resultDiv = document.getElementById('ed25519Result');
+      
+      if (!window.PublicKeyCredential) {
+        resultDiv.innerHTML = '<div class="result failure">WebAuthn not supported in this browser.</div>';
+        return;
+      }
+
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+      const userId = crypto.getRandomValues(new Uint8Array(16));
+
+      const createOptions = {
+        publicKey: {
+          challenge,
+          rp: { name: "Ed25519 Test", id: location.hostname },
+          user: {
+            id: userId,
+            name: "ed25519-test@example.com",
+            displayName: "Ed25519 Test User"
+          },
+          pubKeyCredParams: [
+            { type: "public-key", alg: -8 }  // EdDSA (Ed25519) ONLY
+          ],
+          authenticatorSelection: {
+            residentKey: "preferred",
+            userVerification: "preferred"
+          },
+          timeout: 120000,
+          attestation: "direct"
+        }
+      };
+
+      try {
+        resultDiv.innerHTML = '<div class="result info">Testing Ed25519... Please complete the passkey prompt.</div>';
+        
+        const credential = await navigator.credentials.create(createOptions);
+        
+        // Parse attestation to verify algorithm used
+        const attestationObject = credential.response.attestationObject;
+        const authData = parseAttestationObject(attestationObject);
+        const algUsed = authData.credentialPublicKey?.alg;
+
+        if (algUsed === -8) {
+          resultDiv.innerHTML = `
+            <div class="result success">
+              <span class="status-icon">✅</span>
+              <strong>Ed25519 is SUPPORTED!</strong><br><br>
+              <table>
+                <tr><td>Algorithm</td><td>EdDSA (COSE -8)</td></tr>
+                <tr><td>Credential ID</td><td><code>${toHex(credential.rawId).slice(0, 48)}...</code></td></tr>
+              </table>
+            </div>`;
+        } else {
+          resultDiv.innerHTML = `
+            <div class="result warning">
+              <span class="status-icon">⚠️</span>
+              <strong>Credential created but NOT Ed25519</strong><br><br>
+              Algorithm used: ${algUsed} (expected -8 for EdDSA)
+            </div>`;
+        }
+      } catch (err) {
+        let hint = '';
+        if (err.name === 'NotSupportedError') {
+          hint = 'Your authenticator does not support Ed25519. This is expected for most platform authenticators (Windows Hello, Touch ID, Face ID).';
+        } else if (err.name === 'NotAllowedError') {
+          hint = 'The operation was cancelled or not allowed.';
+        }
+        
+        resultDiv.innerHTML = `
+          <div class="result failure">
+            <span class="status-icon">❌</span>
+            <strong>Ed25519 NOT supported</strong><br><br>
+            <table>
+              <tr><td>Error</td><td>${err.name}</td></tr>
+              <tr><td>Message</td><td>${err.message}</td></tr>
+            </table>
+            ${hint ? `<p><strong>Hint:</strong> ${hint}</p>` : ''}
+          </div>`;
+      }
+    }
+
+    // ==================== PARSING HELPERS ====================
+    function parseAttestationObject(attestationBuffer) {
+      const data = new Uint8Array(attestationBuffer);
+      
+      // Find authData in CBOR
+      const authDataMarker = [0x68, 0x61, 0x75, 0x74, 0x68, 0x44, 0x61, 0x74, 0x61]; // "authData"
+      let idx = findSequence(data, authDataMarker);
+      if (idx === -1) return {};
+      
+      idx += authDataMarker.length;
+      
+      // Skip CBOR byte string header
+      if (data[idx] >= 0x58 && data[idx] <= 0x5b) {
+        const lenBytes = data[idx] - 0x57;
+        idx += 1 + lenBytes;
+      } else if (data[idx] >= 0x40 && data[idx] <= 0x57) {
+        idx += 1;
+      }
+      
+      // authData: rpIdHash(32) + flags(1) + signCount(4) + attestedCredData
+      const flags = data[idx + 32];
+      const hasAttestedCred = (flags & 0x40) !== 0;
+      
+      if (!hasAttestedCred) return { flags };
+      
+      let pos = idx + 37; // After rpIdHash + flags + signCount
+      pos += 16; // Skip AAGUID
+      
+      const credIdLen = (data[pos] << 8) | data[pos + 1];
+      pos += 2 + credIdLen;
+      
+      // Parse COSE key
+      const coseKey = parseCoseKey(data, pos);
+      
+      return { flags, credentialPublicKey: coseKey };
+    }
+
+    function parseCoseKey(data, start) {
+      let pos = start;
+      if (data[pos] < 0xa0 || data[pos] > 0xbf) return {};
+      
+      const mapSize = data[pos] - 0xa0;
+      pos++;
+      
+      for (let i = 0; i < mapSize && pos < data.length - 1; i++) {
+        const key = data[pos] <= 0x17 ? data[pos] : (data[pos] === 0x20 ? -1 : data[pos] - 0x40);
+        pos++;
+        
+        if (key === 3) { // Algorithm field
+          if (data[pos] >= 0x20 && data[pos] <= 0x37) {
+            return { alg: -(data[pos] - 0x20 + 1) };
+          } else if (data[pos] === 0x38) {
+            return { alg: -(data[pos + 1] + 1) };
+          }
+        }
+        
+        // Skip value
+        if (data[pos] >= 0x40 && data[pos] <= 0x5b) {
+          const len = data[pos] <= 0x57 ? data[pos] - 0x40 : data[pos + 1];
+          pos += (data[pos] <= 0x57 ? 1 : 2) + len;
+        } else {
+          pos++;
+        }
+      }
+      return {};
+    }
+
+    function findSequence(arr, seq) {
+      outer: for (let i = 0; i <= arr.length - seq.length; i++) {
+        for (let j = 0; j < seq.length; j++) {
+          if (arr[i + j] !== seq[j]) continue outer;
+        }
+        return i;
+      }
+      return -1;
+    }
+
+    function toHex(buffer) {
+      return Array.from(new Uint8Array(buffer))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+  </script>
+</body>
+</html>
